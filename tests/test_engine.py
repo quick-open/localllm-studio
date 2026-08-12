@@ -2,8 +2,8 @@
 library and NO model present, and that missing lib/model gives a clear error.
 """
 
-from __future__ import annotations
 
+from __future__ import annotations
 import builtins
 import os
 import sys
@@ -29,6 +29,8 @@ def test_import_localllm_without_llama_cpp(monkeypatch):
     assert sys.modules.get("llama_cpp") is None
 
 
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="Windows CI has a real display; main() would open a window and block")
 def test_cli_parser_builds_without_native(monkeypatch):
     monkeypatch.setitem(sys.modules, "llama_cpp", None)
     from localllm.__main__ import build_parser
@@ -38,6 +40,8 @@ def test_cli_parser_builds_without_native(monkeypatch):
     assert ns.model == "m"
 
 
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="Windows CI has a real display; main() would open a window and block")
 def test_gui_main_headless_returns_zero(monkeypatch):
     """gui.main() is side-effect-free to import and returns 0 headless."""
     monkeypatch.delenv("DISPLAY", raising=False)

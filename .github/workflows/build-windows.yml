@@ -20,8 +20,10 @@ jobs:
           pyinstaller --onefile --windowed --name LocalLLMStudio
           --icon localllm-studio.ico
           --version-file packaging/version.txt
+          --hidden-import localllm.__main__
           --add-data "localllm-studio.ico;."
           --collect-all llama_cpp
+          --collect-all customtkinter
           localllm_studio_app.py
       - name: Stage installer inputs
         shell: pwsh
@@ -41,4 +43,10 @@ jobs:
           path: |
             dist/LocalLLMStudio.exe
             packaging/dist/LocalLLMStudio-Setup.exe
+          if-no-files-found: error
+      - name: Upload staging (for signed repack)
+        uses: actions/upload-artifact@v4
+        with:
+          name: localllm-studio-staging
+          path: packaging/staging
           if-no-files-found: error

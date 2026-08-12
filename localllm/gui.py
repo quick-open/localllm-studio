@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
-r"""LocalLLM Studio -- a pure-stdlib tkinter GUI on top of the ``localllm`` API.
+r"""LocalLLM Studio -- an Aura (QuickOpen design system) GUI on the ``localllm`` API.
 
-A single main window: a left sidebar (Chat, Parameters, Models, Prompts) and a
-main panel that swaps to the selected section.  Text generation always runs on a
-background thread and streams tokens back into the last chat bubble via
-``self.after`` so the UI stays responsive; failures surface inline as the
-``LocalLLMError`` message (never a raw traceback).
+A single Aura window: sidebar sections **Chat**, **Parameters**, **Models** and
+**Prompts**.  Text generation always runs on a background thread and streams
+tokens back into the last chat bubble via ``self.after`` so the UI stays
+responsive; failures surface in the Aura status bar as the ``LocalLLMError``
+message (never a raw traceback).
 
-Design goals baked in here (mirrors the sibling PDF Toolkit app):
-  * pure standard-library tkinter/ttk -- NO third-party GUI deps.  Dark mode is
-    a ttk-style + palette swap.
-  * Importing this module does nothing.  Only :func:`main` builds a root window,
-    and it degrades gracefully (prints a message, returns 0) with no display.
+Design goals baked in here (mirrors the QuickOpen house style):
+  * built on the vendored ``localllm/aura.py`` design system, which layers the
+    quickopen.ai look (deep space + light) over CustomTkinter.  Runtime deps:
+    ``customtkinter`` (+ ``darkdetect``) — declared in requirements.txt; the
+    PyInstaller build adds ``--collect-all customtkinter``.
+  * Importing this module does nothing.  Only :func:`main` builds a root
+    window, and it degrades gracefully (prints a message, returns 0) with no
+    display or with customtkinter missing.
   * The native llama.cpp library is imported lazily by the engine, never here --
     so the GUI opens fine with no model and no native library installed; you
     only hit a friendly error when you actually press Send.
@@ -27,40 +30,15 @@ import os
 import sys
 import threading
 
-# NOTE: tkinter is imported lazily inside main()/build_app so that merely
-# importing this module (e.g. during packaging or on a headless CI box) never
-# fails.
+# NOTE: tkinter/customtkinter are imported lazily inside main()/build_app so
+# that merely importing this module (e.g. during packaging or on a headless CI
+# box) never fails.
 
 APP_NAME = "LocalLLM Studio"
 APP_VERSION = "1.0.0"
 WINDOW_TITLE = "LocalLLM Studio — by QuickOpen (quickopen.ai)"
 PROJECT_URL = "https://quickopen.ai"
-
-# (section_id, label) for the sidebar.
-SECTIONS = [
-    ("chat", "Chat"),
-    ("params", "Parameters"),
-    ("models", "Models"),
-    ("prompts", "Prompts"),
-]
-
-# ---- colour palettes (mirror the QuickOpen palette) -------------------------
-PALETTES = {
-    "light": {
-        "bg": "#f5f7fa", "surface": "#ffffff", "text": "#141820",
-        "muted": "#5b6472", "primary": "#2f5fe0", "primary_hi": "#2450c8",
-        "entry": "#ffffff", "border": "#d5dae2", "sel": "#2f5fe0",
-        "sel_fg": "#ffffff", "trough": "#e2e7ef", "ok": "#1f7a3d",
-        "err": "#c0392b", "bubble_user": "#e6edff", "bubble_bot": "#eef1f5",
-    },
-    "dark": {
-        "bg": "#0f1115", "surface": "#1a1e24", "text": "#f1f3f7",
-        "muted": "#9aa4b2", "primary": "#5b86f7", "primary_hi": "#7098ff",
-        "entry": "#1a1e24", "border": "#2a2f38", "sel": "#5b86f7",
-        "sel_fg": "#0f1115", "trough": "#2a2f38", "ok": "#5bd68a",
-        "err": "#ff6b5e", "bubble_user": "#22304d", "bubble_bot": "#20262f",
-    },
-}
+ACCENT = "#2f5fe0"      # publish/specs/localllm-studio.json "accent": [47, 95, 224]
 
 
 # ---------------------------------------------------------------------------
@@ -115,24 +93,24 @@ def open_in_file_manager(path):
 
 
 # ---------------------------------------------------------------------------
-# The app (built lazily; tkinter imported only inside build_app/main)
+# The app (built lazily; tkinter/customtkinter imported only inside build_app)
 # ---------------------------------------------------------------------------
 def build_app():
-    """Construct and return the App class bound to a live tkinter import.
+    """Construct and return the App class bound to live GUI imports.
 
-    Kept inside a function so this module imports cleanly without a display.
+    Kept inside a function so this module imports cleanly without a display
+    (and without customtkinter installed).
     """
     import tkinter as tk
-    from tkinter import ttk, filedialog
+    from tkinter import filedialog
+    import customtkinter as ctk
 
-    from . import guiconfig
+    from . import aura, guiconfig
     from . import prompts as prompts_mod
     from . import models as models_mod
     from .chatsession import ChatSession, preset_names
-    from .engine import LlamaEngine, DEFAULT_PARAMS, library_available
+    from .engine import LlamaEngine, library_available
     from .errors import LocalLLMError
-
-    FONT = "Segoe UI"
 
     PARAM_SPECS = [
         # (key, label, from, to, resolution, is_int)
@@ -144,24 +122,22 @@ def build_app():
         ("seed", "Seed (-1 = random)", -1, 999999, 1, True),
     ]
 
-    class App(tk.Tk):
+    class App(aura.AuraApp):
         def __init__(self):
-            super().__init__()
-            self.title(WINDOW_TITLE)
-            self.geometry("1080x720")
-            self.minsize(900, 600)
-
-            self.theme = guiconfig.get_theme()
-            self._tracked = []          # (tk_widget, role) for manual re-theming
-            self._img_refs = []
-            self._panels = {}
-            self._current = None
+            super().__init__(
+                title=WINDOW_TITLE, app_name=APP_NAME, accent=ACCENT,
+                theme=guiconfig.get_theme(),
+                icon_png=asset_path("localllm-studio.png"),
+                version=APP_VERSION, tagline="offline LLM chat",
+                on_theme_change=guiconfig.set_theme,
+                size=(1080, 720), min_size=(900, 600))
 
             # generation state
             self._engine = None
             self._engine_key = None     # (model, n_ctx) the engine was built for
             self._generating = False
             self._stop_flag = False
+            self._img_refs_gui = []
 
             # persisted params + session
             self.params = dict(guiconfig.get_params())
@@ -173,16 +149,19 @@ def build_app():
 
             self._set_icon()
             self._build_menu()
-            self._build_layout()
-            self._apply_theme()
+            self.add_section("chat", "Chat", "✉", self._panel_chat)
+            self.add_section("params", "Parameters", "⚙", self._panel_params)
+            self.add_section("models", "Models", "⛁", self._panel_models)
+            self.add_section("prompts", "Prompts", "✎", self._panel_prompts)
+            self.show("chat")
+            self.set_status("Ready")
             self.protocol("WM_DELETE_WINDOW", self._on_close)
-            self.after(50, lambda: self._select_section("chat"))
 
         # ---- assets / icon
         def _set_icon(self):
             try:
                 ico = asset_path("localllm-studio.ico")
-                if ico:
+                if ico and os.name == "nt":
                     self.iconbitmap(ico)
                     return
             except Exception:
@@ -191,123 +170,40 @@ def build_app():
                 png = asset_path("localllm-studio.png")
                 if png:
                     img = tk.PhotoImage(file=png)
-                    self._img_refs.append(img)
+                    self._img_refs_gui.append(img)
                     self.iconphoto(True, img)
             except Exception:
                 pass  # icon is cosmetic; never block launch
 
-        # ---- theming
-        def track(self, widget, role):
-            self._tracked.append((widget, role))
+        # ---- theming (bubble tags are raw-tk; re-tint on theme flip)
+        def set_theme(self, theme):
+            super().set_theme(theme)
+            self._retint_transcript()
 
-        def _pal(self):
-            return PALETTES[self.theme]
-
-        def _apply_theme(self):
-            p = self._pal()
-            style = ttk.Style(self)
+        def _retint_transcript(self):
+            if not hasattr(self, "transcript"):
+                return
+            p = aura.P()
             try:
-                style.theme_use("clam")
+                self.transcript.tag_configure(
+                    "user", foreground=p["accent"],
+                    font=aura.font(10, "bold"), spacing1=10)
+                self.transcript.tag_configure(
+                    "bot", foreground=p["ok"],
+                    font=aura.font(10, "bold"), spacing1=10)
+                # chat bubbles: user = accent-soft, assistant = surface2
+                self.transcript.tag_configure(
+                    "user_body", background=p["accent_soft"],
+                    foreground=p["text"], lmargin1=10, lmargin2=10,
+                    rmargin=10, spacing1=4, spacing3=6)
+                self.transcript.tag_configure(
+                    "bot_body", background=p["surface2"],
+                    foreground=p["text"], lmargin1=10, lmargin2=10,
+                    rmargin=10, spacing1=4, spacing3=6)
             except Exception:
                 pass
-            self.configure(bg=p["bg"])
-            style.configure(".", background=p["bg"], foreground=p["text"],
-                            fieldbackground=p["entry"], bordercolor=p["border"],
-                            font=(FONT, 10))
-            style.configure("TFrame", background=p["bg"])
-            style.configure("Sidebar.TFrame", background=p["surface"])
-            style.configure("Card.TFrame", background=p["surface"])
-            style.configure("TLabel", background=p["bg"], foreground=p["text"])
-            style.configure("Muted.TLabel", background=p["bg"], foreground=p["muted"])
-            style.configure("Header.TLabel", background=p["bg"], foreground=p["text"],
-                            font=(FONT, 15, "bold"))
-            style.configure("Sub.TLabel", background=p["bg"], foreground=p["muted"],
-                            font=(FONT, 10))
-            style.configure("Brand.TLabel", background=p["surface"],
-                            foreground=p["text"], font=(FONT, 12, "bold"))
-            style.configure("Status.TLabel", background=p["surface"],
-                            foreground=p["muted"])
-            style.configure("TButton", background=p["surface"], foreground=p["text"],
-                            bordercolor=p["border"], focuscolor=p["surface"],
-                            padding=(10, 5))
-            style.map("TButton",
-                      background=[("active", p["trough"]), ("disabled", p["bg"])],
-                      foreground=[("disabled", p["muted"])])
-            style.configure("Accent.TButton", background=p["primary"],
-                            foreground="#ffffff", padding=(12, 6))
-            style.map("Accent.TButton",
-                      background=[("active", p["primary_hi"]),
-                                  ("disabled", p["border"])],
-                      foreground=[("disabled", p["muted"])])
-            style.configure("Toggle.TButton", background=p["surface"],
-                            foreground=p["text"], padding=(8, 4))
-            style.configure("Nav.TButton", background=p["surface"],
-                            foreground=p["text"], anchor="w", padding=(14, 10))
-            style.map("Nav.TButton",
-                      background=[("active", p["trough"])])
-            style.configure("NavSel.TButton", background=p["primary"],
-                            foreground="#ffffff", anchor="w", padding=(14, 10))
-            style.map("NavSel.TButton", background=[("active", p["primary_hi"])])
-            for name in ("TEntry", "TSpinbox"):
-                style.configure(name, fieldbackground=p["entry"], foreground=p["text"],
-                                insertcolor=p["text"], bordercolor=p["border"])
-            style.configure("TCombobox", fieldbackground=p["entry"],
-                            foreground=p["text"], background=p["surface"],
-                            arrowcolor=p["text"])
-            style.map("TCombobox",
-                      fieldbackground=[("readonly", p["entry"])],
-                      foreground=[("readonly", p["text"])])
-            style.configure("TScale", background=p["bg"], troughcolor=p["trough"])
-            style.configure("Horizontal.TScale", background=p["bg"],
-                            troughcolor=p["trough"])
-            style.configure("Horizontal.TProgressbar", background=p["primary"],
-                            troughcolor=p["trough"], bordercolor=p["border"])
-            style.configure("TScrollbar", background=p["surface"],
-                            troughcolor=p["bg"], bordercolor=p["border"],
-                            arrowcolor=p["text"])
-            style.configure("TSeparator", background=p["border"])
-            style.configure("Treeview", background=p["surface"],
-                            fieldbackground=p["surface"], foreground=p["text"],
-                            bordercolor=p["border"], rowheight=24)
-            style.map("Treeview", background=[("selected", p["primary"])],
-                      foreground=[("selected", p["sel_fg"])])
 
-            for widget, role in list(self._tracked):
-                try:
-                    if role == "listbox":
-                        widget.configure(bg=p["surface"], fg=p["text"],
-                                         selectbackground=p["primary"],
-                                         selectforeground=p["sel_fg"],
-                                         highlightthickness=1,
-                                         highlightbackground=p["border"],
-                                         borderwidth=0)
-                    elif role == "text":
-                        widget.configure(bg=p["surface"], fg=p["text"],
-                                         insertbackground=p["text"],
-                                         selectbackground=p["primary"],
-                                         selectforeground=p["sel_fg"],
-                                         highlightthickness=1,
-                                         highlightbackground=p["border"],
-                                         borderwidth=0)
-                        try:
-                            widget.tag_configure("user", foreground=p["primary"],
-                                                 font=(FONT, 10, "bold"))
-                            widget.tag_configure("bot", foreground=p["ok"],
-                                                 font=(FONT, 10, "bold"))
-                            widget.tag_configure("body", foreground=p["text"])
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-
-        def toggle_theme(self):
-            self.theme = "dark" if self.theme == "light" else "light"
-            guiconfig.set_theme(self.theme)
-            self._apply_theme()
-            self._theme_btn.configure(
-                text="☀ Light mode" if self.theme == "dark" else "🌙 Dark mode")
-
-        # ---- menu
+        # ---- menu (native menus stay)
         def _build_menu(self):
             bar = tk.Menu(self)
             filem = tk.Menu(bar, tearoff=0)
@@ -323,7 +219,10 @@ def build_app():
             bar.add_cascade(label="File", menu=filem)
 
             viewm = tk.Menu(bar, tearoff=0)
-            viewm.add_command(label="Toggle dark mode", command=self.toggle_theme)
+            viewm.add_command(
+                label="Toggle dark mode",
+                command=lambda: self.set_theme(
+                    "light" if self.theme == "dark" else "dark"))
             bar.add_cascade(label="View", menu=viewm)
 
             helpm = tk.Menu(bar, tearoff=0)
@@ -333,88 +232,9 @@ def build_app():
             bar.add_cascade(label="Help", menu=helpm)
             self.configure(menu=bar)
 
-        # ---- layout
-        def _build_layout(self):
-            top = ttk.Frame(self, style="Sidebar.TFrame", padding=(12, 8))
-            top.pack(fill="x", side="top")
-            ttk.Label(top, text="LocalLLM Studio", style="Brand.TLabel").pack(side="left")
-            ttk.Label(top, style="Status.TLabel",
-                      text="  offline · open source · by QuickOpen").pack(side="left")
-            self._theme_btn = ttk.Button(
-                top, style="Toggle.TButton", command=self.toggle_theme,
-                text="☀ Light mode" if self.theme == "dark" else "🌙 Dark mode")
-            self._theme_btn.pack(side="right")
-
-            body = ttk.Frame(self, style="TFrame")
-            body.pack(fill="both", expand=True)
-
-            side = ttk.Frame(body, style="Sidebar.TFrame", width=200)
-            side.pack(side="left", fill="y")
-            side.pack_propagate(False)
-            self._nav_btns = {}
-            for sid, label in SECTIONS:
-                b = ttk.Button(side, text=label, style="Nav.TButton",
-                               command=lambda s=sid: self._select_section(s))
-                b.pack(fill="x", padx=8, pady=(8 if sid == "chat" else 2, 0))
-                self._nav_btns[sid] = b
-
-            main = ttk.Frame(body, style="TFrame", padding=(16, 12))
-            main.pack(side="left", fill="both", expand=True)
-
-            head = ttk.Frame(main, style="TFrame")
-            head.pack(fill="x")
-            self.title_lbl = ttk.Label(head, text="Chat", style="Header.TLabel")
-            self.title_lbl.pack(anchor="w")
-            self.desc_lbl = ttk.Label(head, text="", style="Sub.TLabel",
-                                      wraplength=760, justify="left")
-            self.desc_lbl.pack(anchor="w", pady=(2, 8))
-            ttk.Separator(main).pack(fill="x")
-
-            self.container = ttk.Frame(main, style="TFrame")
-            self.container.pack(fill="both", expand=True, pady=(10, 8))
-
-            # shared inline status/result bar
-            bar = ttk.Frame(self, style="Sidebar.TFrame", padding=(12, 6))
-            bar.pack(fill="x", side="bottom")
-            self.status_lbl = ttk.Label(bar, text="Ready", style="Status.TLabel",
-                                        width=16, anchor="w")
-            self.status_lbl.pack(side="left")
-            self.result_lbl = ttk.Label(bar, text="", style="Status.TLabel",
-                                        anchor="w", wraplength=760, justify="left")
-            self.result_lbl.pack(side="left", fill="x", expand=True, padx=8)
-
-        # ---- section switching
-        def _select_section(self, sid):
-            if self._current is not None:
-                self._current.pack_forget()
-            panel = self._panels.get(sid)
-            if panel is None:
-                panel = ttk.Frame(self.container, style="TFrame")
-                builder = getattr(self, "_panel_" + sid, None)
-                if builder:
-                    builder(panel)
-                self._panels[sid] = panel
-                self._apply_theme()
-            panel.pack(fill="both", expand=True)
-            self._current = panel
-            for s, b in self._nav_btns.items():
-                b.configure(style="NavSel.TButton" if s == sid else "Nav.TButton")
-            meta = {
-                "chat": ("Chat", "Pick an installed model, choose a preset, and "
-                                 "chat. Generation streams in and runs off the UI "
-                                 "thread; press Stop any time."),
-                "params": ("Parameters", "Sampling settings applied to every "
-                                          "generation. Saved automatically."),
-                "models": ("Models", "Installed GGUF models and one-click "
-                                      "downloads of small, permissively licensed "
-                                      "models."),
-                "prompts": ("Prompts", "Built-in and custom system-prompt "
-                                       "presets."),
-            }.get(sid, (sid, ""))
-            self.title_lbl.configure(text=meta[0])
-            self.desc_lbl.configure(text=meta[1])
-            self._clear_result()
-            # refresh dynamic content
+        # ---- section switching: refresh dynamic content on show
+        def show(self, sid):
+            super().show(sid)
             if sid == "chat":
                 self._refresh_models_dropdown()
             elif sid == "models":
@@ -422,99 +242,103 @@ def build_app():
             elif sid == "prompts":
                 self._refresh_prompt_list()
 
-        # ---- status/result helpers
-        def _set_status(self, text, kind="idle"):
-            p = self._pal()
-            color = {"working": p["primary"], "ok": p["ok"], "err": p["err"]}.get(
-                kind, p["muted"])
-            self.status_lbl.configure(text=text, foreground=color)
-
-        def _clear_result(self):
-            self.result_lbl.configure(text="")
-            self._set_status("Ready")
-
-        def _show_error(self, message):
-            self.result_lbl.configure(text="✕ " + str(message),
-                                      foreground=self._pal()["err"])
-            self._set_status("error", kind="err")
-
-        def _show_ok(self, message):
-            self.result_lbl.configure(text="✓ " + str(message),
-                                      foreground=self._pal()["ok"])
-            self._set_status("done", kind="ok")
+        # ---- small helpers
+        @staticmethod
+        def _fill(entry, text):
+            entry.delete(0, "end")
+            if text:
+                entry.insert(0, text)
 
         # =================================================================
         # CHAT
         # =================================================================
         def _panel_chat(self, parent):
-            top = ttk.Frame(parent, style="TFrame")
+            aura.Caption(
+                parent, "Pick an installed model, choose a preset, and chat. "
+                        "Generation streams in and runs off the UI thread; "
+                        "press Stop any time.").pack(anchor="w", pady=(0, 10))
+
+            top = ctk.CTkFrame(parent, fg_color="transparent")
             top.pack(fill="x")
-            ttk.Label(top, text="Model", width=8, anchor="w").pack(side="left")
+            ctk.CTkLabel(top, text="Model", width=52, anchor="w",
+                         font=aura.font()).pack(side="left")
             self.model_var = tk.StringVar(value=guiconfig.get_last_model())
-            self.model_combo = ttk.Combobox(top, textvariable=self.model_var,
-                                             state="readonly", width=36)
+            self.model_combo = aura.AuraCombo(
+                top, variable=self.model_var, values=[""], state="readonly",
+                width=280)
             self.model_combo.pack(side="left", padx=(0, 8))
-            ttk.Button(top, text="Refresh",
-                       command=self._refresh_models_dropdown).pack(side="left")
-            ttk.Label(top, text="Preset").pack(side="left", padx=(16, 4))
+            aura.AuraButton(top, "Refresh", kind="ghost",
+                            command=self._refresh_models_dropdown).pack(side="left")
+            ctk.CTkLabel(top, text="Preset", anchor="w",
+                         font=aura.font()).pack(side="left", padx=(16, 6))
             self.preset_var = tk.StringVar(value="assistant")
-            pc = ttk.Combobox(top, textvariable=self.preset_var, state="readonly",
-                              width=12, values=preset_names())
-            pc.pack(side="left")
-            pc.bind("<<ComboboxSelected>>", lambda e: self._apply_preset())
+            aura.AuraCombo(top, variable=self.preset_var, state="readonly",
+                           width=140, values=preset_names(),
+                           command=lambda _v: self._apply_preset()).pack(side="left")
 
-            sysrow = ttk.Frame(parent, style="TFrame")
-            sysrow.pack(fill="x", pady=(8, 4))
-            ttk.Label(sysrow, text="System", width=8, anchor="w").pack(side="left")
-            self.system_var = tk.StringVar(value=self.session.system)
-            sysent = ttk.Entry(sysrow, textvariable=self.system_var)
-            sysent.pack(side="left", fill="x", expand=True)
-            self.system_var.trace_add(
-                "write", lambda *_: self.session.set_system(self.system_var.get()))
+            sysrow = ctk.CTkFrame(parent, fg_color="transparent")
+            sysrow.pack(fill="x", pady=(10, 4))
+            ctk.CTkLabel(sysrow, text="System", width=52, anchor="w",
+                         font=aura.font()).pack(side="left")
+            # no textvariable: CTkEntry placeholders only work without one
+            self.system_entry = aura.AuraEntry(
+                sysrow, placeholder="System prompt sent with every message…")
+            self.system_entry.pack(side="left", fill="x", expand=True)
+            self._fill(self.system_entry, self.session.system)
+            self.system_entry.bind(
+                "<KeyRelease>",
+                lambda _e: self.session.set_system(self.system_entry.get()))
 
-            # transcript
-            body = ttk.Frame(parent, style="TFrame")
-            body.pack(fill="both", expand=True, pady=6)
-            self.transcript = tk.Text(body, wrap="word", height=16, state="disabled")
-            sb = ttk.Scrollbar(body, orient="vertical", command=self.transcript.yview)
+            # transcript (raw tk.Text: keeps exact streaming behaviour; themed
+            # via aura.track + bubble tags re-tinted in set_theme)
+            body = ctk.CTkFrame(parent, fg_color="transparent")
+            body.pack(fill="both", expand=True, pady=8)
+            self.transcript = tk.Text(body, wrap="word", width=20, height=12,
+                                      state="disabled", font=aura.font(),
+                                      relief="flat", padx=10, pady=8)
+            sb = aura.AuraScrollbar(body, command=self.transcript.yview)
             self.transcript.configure(yscrollcommand=sb.set)
             sb.pack(side="right", fill="y")
             self.transcript.pack(side="left", fill="both", expand=True)
-            self.track(self.transcript, "text")
+            aura.track(self.transcript, "text")
+            self._retint_transcript()
 
             # input row
-            inrow = ttk.Frame(parent, style="TFrame")
+            inrow = ctk.CTkFrame(parent, fg_color="transparent")
             inrow.pack(fill="x", pady=(4, 0))
-            self.input_var = tk.StringVar()
-            self.input_entry = ttk.Entry(inrow, textvariable=self.input_var)
-            self.input_entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
+            self.input_entry = aura.AuraEntry(
+                inrow, placeholder="Type a message and press Enter…")
+            self.input_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
             self.input_entry.bind("<Return>", lambda e: self._send())
-            self.send_btn = ttk.Button(inrow, text="Send", style="Accent.TButton",
-                                       command=self._send)
+            self.send_btn = aura.AuraButton(inrow, "Send", command=self._send)
             self.send_btn.pack(side="left")
-            self.stop_btn = ttk.Button(inrow, text="Stop", command=self._stop,
-                                       state="disabled")
-            self.stop_btn.pack(side="left", padx=(6, 0))
+            self.stop_btn = aura.AuraButton(inrow, "Stop", kind="secondary",
+                                            command=self._stop)
+            self.stop_btn.pack(side="left", padx=(8, 0))
+            self.stop_btn.state(["disabled"])
 
-            ctrl = ttk.Frame(parent, style="TFrame")
-            ctrl.pack(fill="x", pady=(6, 0))
-            ttk.Button(ctrl, text="New chat", command=self._new_chat).pack(side="left")
-            ttk.Button(ctrl, text="Save…", command=self._save_chat).pack(
-                side="left", padx=6)
-            ttk.Button(ctrl, text="Load…", command=self._load_chat).pack(side="left")
+            ctrl = ctk.CTkFrame(parent, fg_color="transparent")
+            ctrl.pack(fill="x", pady=(10, 0))
+            aura.AuraButton(ctrl, "New chat", kind="secondary",
+                            command=self._new_chat).pack(side="left")
+            aura.AuraButton(ctrl, "Save…", kind="ghost",
+                            command=self._save_chat).pack(side="left", padx=8)
+            aura.AuraButton(ctrl, "Load…", kind="ghost",
+                            command=self._load_chat).pack(side="left")
 
             if not library_available():
-                ttk.Label(parent, style="Muted.TLabel", wraplength=760,
-                          text="Note: the native llama.cpp library isn't installed, "
-                               "so generation is disabled. Everything else works; "
-                               "run `pip install llama-cpp-python` to enable chat."
-                          ).pack(anchor="w", pady=(6, 0))
+                aura.Caption(
+                    parent,
+                    "Note: the native llama.cpp library isn't installed, so "
+                    "generation is disabled. Everything else works; run "
+                    "`pip install llama-cpp-python` to enable chat.",
+                    wraplength=720, justify="left").pack(anchor="w", pady=(8, 0))
 
         def _refresh_models_dropdown(self):
             if not hasattr(self, "model_combo"):
                 return
             names = [m.name for m in models_mod.list_models()]
-            self.model_combo.configure(values=names)
+            self.model_combo.configure(values=names or [""])
             cur = self.model_var.get()
             if cur not in names:
                 self.model_var.set(names[0] if names else "")
@@ -524,26 +348,25 @@ def build_app():
                 self.session.apply_preset(self.preset_var.get(),
                                           prompts_module=prompts_mod)
             except LocalLLMError as exc:
-                self._show_error(exc)
+                self.set_error(str(exc))
                 return
-            self.system_var.set(self.session.system)
+            self._fill(self.system_entry, self.session.system)
             self.params.update(self.session.params)
             guiconfig.set_params(self.params)
-            if "params" in self._panels:
-                self._sync_param_widgets()
+            self._sync_param_widgets()
 
         def _append_transcript(self, who_tag, who_label, text):
             self.transcript.configure(state="normal")
             if self.transcript.index("end-1c") != "1.0":
                 self.transcript.insert("end", "\n")
             self.transcript.insert("end", who_label + "\n", who_tag)
-            self.transcript.insert("end", text, "body")
+            self.transcript.insert("end", text, who_tag + "_body")
             self.transcript.configure(state="disabled")
             self.transcript.see("end")
 
         def _append_stream(self, piece):
             self.transcript.configure(state="normal")
-            self.transcript.insert("end", piece, "body")
+            self.transcript.insert("end", piece, "bot_body")
             self.transcript.configure(state="disabled")
             self.transcript.see("end")
 
@@ -559,14 +382,14 @@ def build_app():
             if self._generating:
                 return
             model_name = self.model_var.get().strip()
-            text = self.input_var.get().strip()
+            text = self.input_entry.get().strip()
             if not model_name:
-                self._show_error("Choose a model first (Models tab to download one).")
+                self.set_error("Choose a model first (Models tab to download one).")
                 return
             if not text:
                 return
-            self.input_var.set("")
-            self.session.set_system(self.system_var.get())
+            self._fill(self.input_entry, "")
+            self.session.set_system(self.system_entry.get())
             self.session.params = dict(self.params)
             self.session.add_user(text)
             self._append_transcript("user", "You", text)
@@ -576,8 +399,7 @@ def build_app():
             self._stop_flag = False
             self.send_btn.state(["disabled"])
             self.stop_btn.state(["!disabled"])
-            self._set_status("Generating…", kind="working")
-            self.result_lbl.configure(text="")
+            self.set_status("Generating…", kind="working")
 
             messages = self.session.build_messages()
             params = dict(self.session.params)
@@ -605,11 +427,11 @@ def build_app():
                 self.session.add_assistant(reply)
                 if err:
                     self.after(0, lambda: self._append_stream(""))
-                    self._show_error(err)
+                    self.set_error(err)
                 elif self._stop_flag:
-                    self._set_status("stopped", kind="idle")
+                    self.set_status("Stopped.", kind="idle")
                 else:
-                    self._show_ok("Done.")
+                    self.set_success("Done.")
 
             threading.Thread(target=worker, daemon=True).start()
 
@@ -618,14 +440,14 @@ def build_app():
 
         def _new_chat(self):
             self.session = ChatSession(
-                system=self.system_var.get() if hasattr(self, "system_var")
+                system=self.system_entry.get() if hasattr(self, "system_entry")
                 else prompts_mod.default_prompt(),
                 params=dict(self.params), max_context_tokens=4096)
             if hasattr(self, "transcript"):
                 self.transcript.configure(state="normal")
                 self.transcript.delete("1.0", "end")
                 self.transcript.configure(state="disabled")
-            self._clear_result()
+            self.set_status("Ready")
 
         def _save_chat(self):
             path = filedialog.asksaveasfilename(
@@ -637,9 +459,9 @@ def build_app():
             try:
                 self.session.model = self.model_var.get() if hasattr(self, "model_var") else ""
                 self.session.save(path)
-                self._show_ok(f"Saved chat → {path}")
+                self.set_success(f"Saved chat → {path}")
             except LocalLLMError as exc:
-                self._show_error(exc)
+                self.set_error(str(exc))
 
         def _load_chat(self):
             path = filedialog.askopenfilename(
@@ -650,10 +472,10 @@ def build_app():
             try:
                 self.session = ChatSession.load(path, max_context_tokens=4096)
             except LocalLLMError as exc:
-                self._show_error(exc)
+                self.set_error(str(exc))
                 return
-            if hasattr(self, "system_var"):
-                self.system_var.set(self.session.system)
+            if hasattr(self, "system_entry"):
+                self._fill(self.system_entry, self.session.system)
             if hasattr(self, "transcript"):
                 self.transcript.configure(state="normal")
                 self.transcript.delete("1.0", "end")
@@ -663,38 +485,46 @@ def build_app():
                         self._append_transcript("user", "You", m["content"])
                     else:
                         self._append_transcript("bot", "Assistant", m["content"])
-            self._show_ok(f"Loaded chat ← {path}")
+            self.set_success(f"Loaded chat ← {path}")
 
         # =================================================================
         # PARAMETERS
         # =================================================================
         def _panel_params(self, parent):
+            aura.Caption(
+                parent, "Sampling settings applied to every generation. "
+                        "Saved automatically.").pack(anchor="w", pady=(0, 10))
+            card = aura.Card(parent, title="Sampling")
+            card.pack(fill="x")
             self._param_vars = {}
             self._param_labels = {}
-            grid = ttk.Frame(parent, style="TFrame")
-            grid.pack(fill="x", pady=4)
+            grid = ctk.CTkFrame(card.body, fg_color="transparent")
+            grid.pack(fill="x")
             for i, (key, label, lo, hi, res, is_int) in enumerate(PARAM_SPECS):
-                ttk.Label(grid, text=label, width=18, anchor="w").grid(
-                    row=i, column=0, sticky="w", pady=4)
+                ctk.CTkLabel(grid, text=label, width=150, anchor="w",
+                             font=aura.font()).grid(
+                    row=i, column=0, sticky="w", pady=6)
                 var = tk.DoubleVar(value=float(self.params.get(key, 0)))
                 self._param_vars[key] = (var, is_int)
-                scale = ttk.Scale(grid, from_=lo, to=hi, variable=var,
-                                  orient="horizontal", length=320,
-                                  command=lambda v, k=key: self._on_param_change(k))
-                scale.grid(row=i, column=1, sticky="we", padx=8)
-                vlbl = ttk.Label(grid, text=self._fmt_param(key), width=10,
-                                 anchor="e")
+                steps = max(1, int(round((hi - lo) / res)))
+                slider = ctk.CTkSlider(
+                    grid, from_=lo, to=hi, variable=var,
+                    number_of_steps=min(steps, 4096), height=16,
+                    command=lambda v, k=key: self._on_param_change(k))
+                slider.grid(row=i, column=1, sticky="we", padx=10)
+                vlbl = ctk.CTkLabel(grid, text=self._fmt_param(key), width=70,
+                                    anchor="e", font=aura.font())
                 vlbl.grid(row=i, column=2, sticky="e")
                 self._param_labels[key] = vlbl
             grid.columnconfigure(1, weight=1)
 
-            btns = ttk.Frame(parent, style="TFrame")
-            btns.pack(fill="x", pady=(10, 0))
-            ttk.Button(btns, text="Reset to defaults",
-                       command=self._reset_params).pack(side="left")
-            ttk.Label(parent, style="Muted.TLabel",
-                      text="Parameters are saved automatically and applied to "
-                           "every generation.").pack(anchor="w", pady=(8, 0))
+            btns = ctk.CTkFrame(card.body, fg_color="transparent")
+            btns.pack(fill="x", pady=(12, 0))
+            aura.AuraButton(btns, "Reset to defaults", kind="secondary",
+                            command=self._reset_params).pack(side="left")
+            aura.Caption(parent,
+                         "Parameters are saved automatically and applied to "
+                         "every generation.").pack(anchor="w", pady=(10, 0))
 
         def _fmt_param(self, key):
             for k, _l, _lo, _hi, _r, is_int in PARAM_SPECS:
@@ -723,61 +553,60 @@ def build_app():
             guiconfig.set_params(self.params)
             self.session.params = dict(self.params)
             self._sync_param_widgets()
-            self._show_ok("Parameters reset to defaults.")
+            self.set_success("Parameters reset to defaults.")
 
         # =================================================================
         # MODELS
         # =================================================================
         def _panel_models(self, parent):
-            dirrow = ttk.Frame(parent, style="TFrame")
-            dirrow.pack(fill="x")
-            self.modeldir_lbl = ttk.Label(dirrow, style="Sub.TLabel",
-                                          text="Models folder: " +
-                                          models_mod.models_dir())
+            aura.Caption(
+                parent, "Installed GGUF models and one-click downloads of "
+                        "small, permissively licensed models.").pack(
+                anchor="w", pady=(0, 10))
+
+            inst = aura.Card(parent, title="Installed")
+            inst.pack(fill="both", expand=True)
+            dirrow = ctk.CTkFrame(inst.body, fg_color="transparent")
+            dirrow.pack(fill="x", pady=(0, 8))
+            self.modeldir_lbl = aura.Caption(
+                dirrow, "Models folder: " + models_mod.models_dir())
             self.modeldir_lbl.pack(side="left")
-            ttk.Button(dirrow, text="Open folder",
-                       command=lambda: open_in_file_manager(
-                           models_mod.models_dir(create=True))).pack(side="right")
+            aura.AuraButton(dirrow, "Open folder", kind="ghost",
+                            command=lambda: open_in_file_manager(
+                                models_mod.models_dir(create=True))).pack(
+                side="right")
+            self.installed_list = tk.Listbox(inst.body, height=6,
+                                             activestyle="none",
+                                             exportselection=False,
+                                             font=aura.font())
+            self.installed_list.pack(fill="both", expand=True)
+            aura.track(self.installed_list, "listbox")
+            aura.AuraButton(inst.body, "Refresh", kind="secondary",
+                            command=self._refresh_installed_list).pack(
+                anchor="w", pady=(10, 0))
 
-            ttk.Label(parent, text="Installed", style="Header.TLabel").pack(
-                anchor="w", pady=(10, 2))
-            ibody = ttk.Frame(parent, style="TFrame")
-            ibody.pack(fill="both", expand=True)
-            self.installed_list = tk.Listbox(ibody, height=6, activestyle="none",
-                                             exportselection=False)
-            isb = ttk.Scrollbar(ibody, orient="vertical",
-                                command=self.installed_list.yview)
-            self.installed_list.configure(yscrollcommand=isb.set)
-            isb.pack(side="right", fill="y")
-            self.installed_list.pack(side="left", fill="both", expand=True)
-            self.track(self.installed_list, "listbox")
-            ttk.Button(parent, text="Refresh",
-                       command=self._refresh_installed_list).pack(anchor="w", pady=4)
-
-            ttk.Separator(parent).pack(fill="x", pady=8)
-            ttk.Label(parent, text="Download from catalog",
-                      style="Header.TLabel").pack(anchor="w")
-            crow = ttk.Frame(parent, style="TFrame")
-            crow.pack(fill="x", pady=4)
+            dl = aura.Card(parent, title="Download from catalog")
+            dl.pack(fill="x", pady=(14, 0))
+            crow = ctk.CTkFrame(dl.body, fg_color="transparent")
+            crow.pack(fill="x")
             self.catalog_var = tk.StringVar()
             names = [e.name for e in models_mod.catalog()]
-            self.catalog_combo = ttk.Combobox(crow, textvariable=self.catalog_var,
-                                              state="readonly", width=44,
-                                              values=names)
+            self.catalog_combo = aura.AuraCombo(
+                crow, variable=self.catalog_var, state="readonly", width=380,
+                values=names or [""],
+                command=lambda _v: self._update_catalog_note())
             if names:
                 self.catalog_var.set(names[0])
-            self.catalog_combo.pack(side="left", padx=(0, 8))
-            self.dl_btn = ttk.Button(crow, text="Download", style="Accent.TButton",
-                                     command=self._download_model)
+            self.catalog_combo.pack(side="left", padx=(0, 10))
+            self.dl_btn = aura.AuraButton(crow, "Download",
+                                          command=self._download_model)
             self.dl_btn.pack(side="left")
-            self.dl_progress = ttk.Progressbar(parent, orient="horizontal",
-                                               mode="determinate", maximum=100)
-            self.dl_progress.pack(fill="x", pady=(8, 2))
-            self.catalog_note = ttk.Label(parent, style="Muted.TLabel",
-                                          wraplength=760, justify="left", text="")
+            self.dl_progress = aura.ProgressBar(dl.body)   # 0..1 scale
+            self.dl_progress.pack(fill="x", pady=(12, 4))
+            self.dl_progress.set(0)
+            self.catalog_note = aura.Caption(dl.body, "", wraplength=720,
+                                             justify="left")
             self.catalog_note.pack(anchor="w")
-            self.catalog_combo.bind("<<ComboboxSelected>>",
-                                    lambda e: self._update_catalog_note())
             self._update_catalog_note()
 
         def _refresh_installed_list(self):
@@ -804,13 +633,12 @@ def build_app():
             if not name:
                 return
             self.dl_btn.state(["disabled"])
-            self.dl_progress.configure(value=0)
-            self._set_status("Downloading…", kind="working")
-            self.result_lbl.configure(text="")
+            self.dl_progress.set(0)
+            self.set_status("Downloading…", kind="working")
 
             def progress(done, total):
-                pct = int(done * 100 / total) if total else 0
-                self.after(0, lambda: self.dl_progress.configure(value=pct))
+                frac = done / total if total else 0.0
+                self.after(0, lambda: self.dl_progress.set(min(1.0, frac)))
 
             def worker():
                 try:
@@ -824,10 +652,10 @@ def build_app():
             def finish(dest, err):
                 self.dl_btn.state(["!disabled"])
                 if err:
-                    self._show_error(err)
+                    self.set_error(err)
                     return
-                self.dl_progress.configure(value=100)
-                self._show_ok(f"Downloaded → {dest}")
+                self.dl_progress.set(1.0)
+                self.set_success(f"Downloaded → {dest}")
                 self._refresh_installed_list()
                 self._refresh_models_dropdown()
 
@@ -837,36 +665,46 @@ def build_app():
         # PROMPTS
         # =================================================================
         def _panel_prompts(self, parent):
-            body = ttk.Frame(parent, style="TFrame")
+            aura.Caption(
+                parent, "Built-in and custom system-prompt presets.").pack(
+                anchor="w", pady=(0, 10))
+            body = ctk.CTkFrame(parent, fg_color="transparent")
             body.pack(fill="both", expand=True)
-            left = ttk.Frame(body, style="TFrame")
+            # fixed column packed BEFORE the expanding one (pack shrinks later
+            # children first)
+            left = aura.Card(body, title="Presets")
             left.pack(side="left", fill="y")
-            self.prompt_list = tk.Listbox(left, height=12, activestyle="none",
-                                          exportselection=False, width=24)
-            self.prompt_list.pack(side="left", fill="y")
+            self.prompt_list = tk.Listbox(left.body, height=12,
+                                          activestyle="none",
+                                          exportselection=False, width=24,
+                                          font=aura.font())
+            self.prompt_list.pack(side="left", fill="y", expand=True)
             self.prompt_list.bind("<<ListboxSelect>>",
                                   lambda e: self._on_prompt_select())
-            self.track(self.prompt_list, "listbox")
+            aura.track(self.prompt_list, "listbox")
 
-            right = ttk.Frame(body, style="TFrame")
-            right.pack(side="left", fill="both", expand=True, padx=(10, 0))
-            ttk.Label(right, text="Name", style="Sub.TLabel").pack(anchor="w")
-            self.prompt_name_var = tk.StringVar()
-            ttk.Entry(right, textvariable=self.prompt_name_var).pack(fill="x")
-            ttk.Label(right, text="System prompt", style="Sub.TLabel").pack(
-                anchor="w", pady=(8, 0))
-            self.prompt_text = tk.Text(right, wrap="word", height=10)
+            right = aura.Card(body, title="Edit preset")
+            right.pack(side="left", fill="both", expand=True, padx=(14, 0))
+            self.prompt_name_entry = aura.AuraEntry(
+                right.body, placeholder="Preset name")
+            self.prompt_name_entry.pack(fill="x")
+            aura.Caption(right.body, "System prompt").pack(
+                anchor="w", pady=(10, 2))
+            self.prompt_text = tk.Text(right.body, wrap="word", width=20,
+                                       height=10, font=aura.font(),
+                                       relief="flat", padx=8, pady=6)
             self.prompt_text.pack(fill="both", expand=True)
-            self.track(self.prompt_text, "text")
+            aura.track(self.prompt_text, "text")
 
-            btns = ttk.Frame(right, style="TFrame")
-            btns.pack(fill="x", pady=6)
-            ttk.Button(btns, text="Save preset", style="Accent.TButton",
-                       command=self._save_prompt).pack(side="left")
-            ttk.Button(btns, text="Delete", command=self._delete_prompt).pack(
-                side="left", padx=6)
-            ttk.Button(btns, text="Use in chat",
-                       command=self._use_prompt).pack(side="left")
+            btns = ctk.CTkFrame(right.body, fg_color="transparent")
+            btns.pack(fill="x", pady=(10, 0))
+            aura.AuraButton(btns, "Save preset",
+                            command=self._save_prompt).pack(side="left")
+            aura.AuraButton(btns, "Delete", kind="danger",
+                            command=self._delete_prompt).pack(
+                side="left", padx=8)
+            aura.AuraButton(btns, "Use in chat", kind="secondary",
+                            command=self._use_prompt).pack(side="left")
 
         def _refresh_prompt_list(self):
             if not hasattr(self, "prompt_list"):
@@ -891,59 +729,62 @@ def build_app():
                 text = prompts_mod.get_prompt(name)
             except LocalLLMError:
                 return
-            self.prompt_name_var.set(name)
+            self._fill(self.prompt_name_entry, name)
             self.prompt_text.delete("1.0", "end")
             self.prompt_text.insert("1.0", text)
 
         def _save_prompt(self):
-            name = self.prompt_name_var.get().strip()
+            name = self.prompt_name_entry.get().strip()
             text = self.prompt_text.get("1.0", "end").strip()
             try:
                 prompts_mod.save_custom(name, text)
             except LocalLLMError as exc:
-                self._show_error(exc)
+                self.set_error(str(exc))
                 return
             self._refresh_prompt_list()
-            self._show_ok(f"Saved preset '{name}'.")
+            self.set_success(f"Saved preset '{name}'.")
 
         def _delete_prompt(self):
-            name = self.prompt_name_var.get().strip()
+            name = self.prompt_name_entry.get().strip()
             try:
                 prompts_mod.delete_custom(name)
             except LocalLLMError as exc:
-                self._show_error(exc)
+                self.set_error(str(exc))
                 return
             self._refresh_prompt_list()
-            self._show_ok(f"Deleted preset '{name}'.")
+            self.set_success(f"Deleted preset '{name}'.")
 
         def _use_prompt(self):
             text = self.prompt_text.get("1.0", "end").strip()
             self.session.set_system(text)
-            if hasattr(self, "system_var"):
-                self.system_var.set(text)
-            self._show_ok("Applied to the current chat's system prompt.")
+            if hasattr(self, "system_entry"):
+                self._fill(self.system_entry, text)
+            self.set_success("Applied to the current chat's system prompt.")
 
         # ---- About
         def _about(self):
-            win = tk.Toplevel(self)
+            win = ctk.CTkToplevel(self)
             win.title("About LocalLLM Studio")
-            win.configure(bg=self._pal()["bg"])
             win.resizable(False, False)
-            frm = ttk.Frame(win, style="TFrame", padding=18)
-            frm.pack(fill="both", expand=True)
-            ttk.Label(frm, text="LocalLLM Studio", style="Header.TLabel").pack(anchor="w")
-            ttk.Label(frm, text=f"Version {APP_VERSION}", style="Sub.TLabel").pack(
-                anchor="w", pady=(0, 8))
-            ttk.Label(frm, style="TLabel", justify="left", wraplength=400,
-                      text="Run open-weight GGUF language models fully offline on "
-                           "your own hardware via llama.cpp.\n\n"
-                           "100% AI-built, open source, published on QuickOpen.\n"
-                           "Nothing is ever uploaded anywhere.").pack(anchor="w")
-            ttk.Label(frm, style="Sub.TLabel", justify="left", wraplength=400,
-                      text="Licensed under Apache-2.0. Built on llama-cpp-python "
-                           "(MIT). You bring your own model file.").pack(
-                anchor="w", pady=(8, 4))
-            ttk.Button(frm, text="Close", command=win.destroy).pack(anchor="e")
+            frm = ctk.CTkFrame(win, fg_color="transparent")
+            frm.pack(fill="both", expand=True, padx=20, pady=18)
+            aura.Heading(frm, APP_NAME).pack(anchor="w")
+            aura.Caption(frm, f"Version {APP_VERSION}").pack(
+                anchor="w", pady=(0, 10))
+            ctk.CTkLabel(
+                frm, font=aura.font(), justify="left", anchor="w",
+                wraplength=400,
+                text="Run open-weight GGUF language models fully offline on "
+                     "your own hardware via llama.cpp.\n\n"
+                     "100% AI-built, open source, published on QuickOpen.\n"
+                     "Nothing is ever uploaded anywhere.").pack(anchor="w")
+            aura.Caption(
+                frm, "Licensed under Apache-2.0. Built on llama-cpp-python "
+                     "(MIT) and CustomTkinter (MIT). You bring your own "
+                     "model file.", wraplength=400, justify="left").pack(
+                anchor="w", pady=(8, 10))
+            aura.AuraButton(frm, "Close", kind="secondary",
+                            command=win.destroy).pack(anchor="e")
             win.transient(self)
             win.grab_set()
 
@@ -963,8 +804,9 @@ def build_app():
 def main():
     """Launch the GUI. Side-effect-free to import; headless-guarded.
 
-    Returns 0 on a clean exit (including when there is no display, where it
-    prints a short message and returns instead of raising).
+    Returns 0 on a clean exit (including when there is no display or when
+    customtkinter is missing, where it prints a short message and returns
+    instead of raising).
     """
     try:
         import tkinter as tk  # noqa: F401 - just probing availability
@@ -972,10 +814,14 @@ def main():
         sys.stderr.write(f"{APP_NAME}: tkinter is not available ({exc}).\n")
         return 0
 
-    # Headless guard: building a root can fail with no display (TclError).
     try:
         App = build_app()
         app = App()
+    except ImportError as exc:
+        sys.stderr.write(
+            f"{APP_NAME}: the GUI needs the 'customtkinter' package ({exc}). "
+            f"Install it with:  pip install customtkinter\n")
+        return 0
     except Exception as exc:
         name = type(exc).__name__
         if "Tcl" in name or "display" in str(exc).lower() or "DISPLAY" in str(exc):
