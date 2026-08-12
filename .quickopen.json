@@ -1,0 +1,13 @@
+{
+  "slug": "localllm-studio",
+  "name": "LocalLLM Studio",
+  "tagline": "Chat with local GGUF LLMs on your own machine \u2014 private, offline, model-agnostic.",
+  "categorySlug": "llm-apps-agents",
+  "license": "Apache-2.0",
+  "description": "Run open-weight language models (GGUF) fully offline on your own hardware via llama.cpp: a chat interface with system prompts, conversation history, adjustable sampling, and simple retrieval over your own files. You supply the model file \u2014 nothing is sent to any server.",
+  "aiStack": "Python (tkinter + CLI), llama-cpp-python",
+  "platforms": [
+    "windows"
+  ],
+  "buildEntry": "localllm_studio_app.py"
+}

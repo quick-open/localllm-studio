@@ -1,0 +1,2 @@
+# LocalLLM Studio runtime deps — permissive/weak-copyleft only, no AGPL/proprietary.
+llama-cpp-python>=0.2.90
