@@ -33,7 +33,7 @@ from .models import (
 )
 from . import prompts
 
-__version__ = "1.0.0"
+__version__ = "1.0.5"
 
 __all__ = [
     "LocalLLMError",
