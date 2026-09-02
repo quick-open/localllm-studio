@@ -1,6 +1,6 @@
 ; Inno Setup — LocalLLM Studio. Signed single-file installer, compiled in CI.
 #define AppName "LocalLLM Studio"
-#define AppVersion "1.0.5"
+#define AppVersion "1.0.6"
 
 [Setup]
 AppMutex=QuickOpen.LocalLLMStudio
@@ -42,7 +42,7 @@ WizardSmallImageFile=branding\wizard-small.bmp
 AppCopyright=Apache-2.0. 100%% AI-built, published on QuickOpen (quickopen.ai).
 VersionInfoCompany=QuickOpen
 VersionInfoProductName=LocalLLM Studio
-VersionInfoVersion=1.0.5.0
+VersionInfoVersion=1.0.6.0
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 ArchitecturesInstallIn64BitMode=x64compatible
